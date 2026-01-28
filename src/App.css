@@ -382,4 +382,231 @@ input::placeholder {
     width: 100%;
     justify-content: center;
   }
+
+  .result-actions {
+    flex-wrap: wrap;
+  }
+}
+
+/* ===== NEW FEATURE STYLES ===== */
+
+/* Recipe Import Icon */
+.icon-recipe {
+  background: linear-gradient(135deg, #ec4899 0%, #f43f5e 100%);
+}
+
+/* Progress Bar */
+.budget-info {
+  width: 100%;
+}
+
+.budget-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.budget-estimated {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--success);
+}
+
+.budget-estimated.over-budget {
+  color: var(--danger);
+}
+
+.progress-bar {
+  height: 8px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 0.5rem;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--gradient-2);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.progress-fill.over-budget {
+  background: linear-gradient(135deg, var(--danger) 0%, #f97316 100%);
+}
+
+.over-budget-warning {
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  color: var(--danger);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+/* Pantry Checkbox */
+.btn-checkbox {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 2px solid var(--border-color);
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: white;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.btn-checkbox:hover {
+  border-color: var(--accent-primary);
+}
+
+.btn-checkbox.checked {
+  background: var(--success);
+  border-color: var(--success);
+}
+
+.item-row.in-pantry {
+  opacity: 0.6;
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.strikethrough {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+/* Price Input in Item Row */
+.price-input-wrapper {
+  position: relative;
+  width: 80px;
+  flex-shrink: 0;
+}
+
+.price-prefix {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.price-input {
+  width: 100%;
+  padding: 0.4rem 0.5rem 0.4rem 1.25rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+}
+
+.price-input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+}
+
+/* Retailer-branded buttons */
+.retailer-link {
+  padding: 0.4rem 0.75rem;
+  text-decoration: none;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 0.75rem;
+  transition: all 0.2s;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.retailer-link.amazon {
+  background: #ff9900;
+  color: #0f1111;
+}
+
+.retailer-link.amazon:hover {
+  background: #ffb347;
+  transform: translateY(-2px);
+}
+
+.retailer-link.walmart {
+  background: #0071dc;
+  color: white;
+}
+
+.retailer-link.walmart:hover {
+  background: #0088ff;
+  transform: translateY(-2px);
+}
+
+.retailer-link.target {
+  background: #cc0000;
+  color: white;
+}
+
+.retailer-link.target:hover {
+  background: #e60000;
+  transform: translateY(-2px);
+}
+
+/* Retailer open-all buttons */
+.btn-amazon {
+  background: #ff9900;
+  color: #0f1111;
+}
+
+.btn-amazon:hover {
+  background: #ffb347;
+  transform: translateY(-2px);
+}
+
+.btn-walmart {
+  background: #0071dc;
+  color: white;
+}
+
+.btn-walmart:hover {
+  background: #0088ff;
+  transform: translateY(-2px);
+}
+
+.btn-target {
+  background: #cc0000;
+  color: white;
+}
+
+.btn-target:hover {
+  background: #e60000;
+  transform: translateY(-2px);
+}
+
+/* Voice Input Button */
+.btn-mic {
+  min-width: 48px;
+  font-size: 1.25rem;
+}
+
+.btn-mic.listening {
+  animation: pulse 1s infinite;
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+@keyframes pulse {
+
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+  }
+
+  50% {
+    box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+  }
 }
