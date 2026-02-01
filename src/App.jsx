@@ -4,8 +4,27 @@ import './App.css'
 // Gemini API for recipe parsing (uses free tier)
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || ''
 
+const CATEGORIES = {
+  PRODUCE: { label: 'Produce', icon: '🥦', keywords: ['apple', 'banana', 'carrot', 'onion', 'lettuce', 'tomato', 'potato', 'fruit', 'veg', 'berry', 'spinach', 'kale'] },
+  DAIRY: { label: 'Dairy & Eggs', icon: '🥛', keywords: ['milk', 'cheese', 'yogurt', 'butter', 'egg', 'cream', 'sour cream'] },
+  MEAT: { label: 'Meat & Seafood', icon: '🥩', keywords: ['chicken', 'beef', 'pork', 'steak', 'salmon', 'shrimp', 'turkey', 'bacon', 'fish', 'ground'] },
+  FROZEN: { label: 'Frozen', icon: '❄️', keywords: ['ice cream', 'frozen', 'pizza', 'nugget'] },
+  PANTRY: { label: 'Pantry', icon: '🥫', keywords: ['rice', 'pasta', 'sauce', 'bread', 'cereal', 'flour', 'sugar', 'oil', 'spice', 'salt', 'pepper', 'can', 'bean', 'soup'] },
+  SNACKS: { label: 'Snacks & Drinks', icon: '🍿', keywords: ['chip', 'cookie', 'soda', 'juice', 'coffee', 'tea', 'water', 'cracker', 'nut', 'chocolate'] },
+  HOUSEHOLD: { label: 'Household', icon: '🧼', keywords: ['paper', 'soap', 'detergent', 'cleaner', 'bag', 'tinfoil', 'tissue'] },
+  OTHER: { label: 'Other', icon: '📦', keywords: [] }
+}
+
+const STAPLES = [
+  { name: 'Milk', icon: '🥛' },
+  { name: 'Eggs', icon: '🥚' },
+  { name: 'Bread', icon: '🍞' },
+  { name: 'Bananas', icon: '🍌' },
+  { name: 'Coffee', icon: '☕' }
+]
+
 function App() {
-  // Item structure: { name: string, inPantry: boolean, estimatedPrice: number }
+  // Item structure: { name: string, inPantry: boolean, estimatedPrice: number, category: string }
   const [items, setItems] = useState([])
   const [inputValue, setInputValue] = useState('')
   const [budget, setBudget] = useState('')
@@ -14,7 +33,90 @@ function App() {
   const [recipeUrl, setRecipeUrl] = useState('')
   const [isImporting, setIsImporting] = useState(false)
   const [isListening, setIsListening] = useState(false)
-  const recognitionRef = useRef(null)
+
+  // Recipe URL Import - extract ingredients using Gemini
+  const importRecipe = async () => {
+    if (!recipeUrl.trim()) return
+
+    setIsImporting(true)
+    try {
+      if (GEMINI_API_KEY) {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{
+                parts: [{
+                  text: `Extract just the ingredient names (not quantities) from this recipe URL: ${recipeUrl}. Return only a JSON array of ingredient names, nothing else. Example: ["flour", "sugar", "eggs"]`
+                }]
+              }]
+            })
+          }
+        )
+        const data = await response.json()
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+        const jsonMatch = text.match(/\[[\s\S]*\]/)
+        if (jsonMatch) {
+          const ingredients = JSON.parse(jsonMatch[0])
+          addMultipleItems(ingredients)
+        }
+      } else {
+        showNotification('Add VITE_GEMINI_API_KEY to .env for recipe import')
+      }
+    } catch (error) {
+      console.error('Recipe import failed:', error)
+      showNotification('Failed to import recipe')
+    } finally {
+      setIsImporting(false)
+      setRecipeUrl('')
+    }
+  }
+
+  // Voice Input - Web Speech API
+  const startVoiceInput = () => {
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+      showNotification('Voice input not supported in this browser')
+      return
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    recognitionRef.current = new SpeechRecognition()
+    recognitionRef.current.continuous = false
+    recognitionRef.current.interimResults = false
+
+    recognitionRef.current.onstart = () => setIsListening(true)
+    recognitionRef.current.onend = () => setIsListening(false)
+    recognitionRef.current.onerror = () => {
+      setIsListening(false)
+      showNotification('Voice recognition error')
+    }
+
+    recognitionRef.current.onresult = (event) => {
+      const transcript = event.results[0][0].transcript
+      const itemList = transcript
+        .toLowerCase()
+        .replace(/\band\b/g, ',')
+        .replace(/\bcomma\b/g, ',')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+
+      addMultipleItems(itemList)
+    }
+
+    recognitionRef.current.start()
+  }
+
+  // Categorization helper
+  const getCategory = (name) => {
+    const lower = name.toLowerCase()
+    for (const [key, cat] of Object.entries(CATEGORIES)) {
+      if (cat.keywords.some(k => lower.includes(k))) return key
+    }
+    return 'OTHER'
+  }
 
   // Load from URL params on mount (Share via Link restore)
   useEffect(() => {
@@ -65,7 +167,12 @@ function App() {
   const addItem = useCallback((itemName = inputValue) => {
     const trimmed = (typeof itemName === 'string' ? itemName : inputValue).trim()
     if (trimmed && !items.find(i => i.name.toLowerCase() === trimmed.toLowerCase())) {
-      setItems(prev => [...prev, { name: trimmed, inPantry: false, estimatedPrice: '' }])
+      setItems(prev => [...prev, {
+        name: trimmed,
+        inPantry: false,
+        estimatedPrice: '',
+        category: getCategory(trimmed)
+      }])
       if (itemName === inputValue) setInputValue('')
     }
   }, [inputValue, items])
@@ -75,7 +182,12 @@ function App() {
     const newItems = itemNames
       .map(name => name.trim())
       .filter(name => name && !items.find(i => i.name.toLowerCase() === name.toLowerCase()))
-      .map(name => ({ name, inPantry: false, estimatedPrice: '' }))
+      .map(name => ({
+        name,
+        inPantry: false,
+        estimatedPrice: '',
+        category: getCategory(name)
+      }))
 
     if (newItems.length > 0) {
       setItems(prev => [...prev, ...newItems])
@@ -157,15 +269,13 @@ function App() {
     })
   }
 
-  // Recipe URL Import - extract ingredients using Gemini
-  const importRecipe = async () => {
-    if (!recipeUrl.trim()) return
-
-    setIsImporting(true)
+  // Get Expert Budget Hacks from Gemini
+  const getExpertAdvice = async () => {
+    if (items.length === 0) return
+    setIsLoadingHacks(true)
     try {
-      // For demo/MVP, we'll use a simple extraction approach
-      // In production, you'd call Gemini API with the recipe URL
       if (GEMINI_API_KEY) {
+        const itemNames = items.filter(i => !i.inPantry).map(i => i.name).join(', ')
         const response = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
           {
@@ -174,7 +284,7 @@ function App() {
             body: JSON.stringify({
               contents: [{
                 parts: [{
-                  text: `Extract just the ingredient names (not quantities) from this recipe URL: ${recipeUrl}. Return only a JSON array of ingredient names, nothing else. Example: ["flour", "sugar", "eggs"]`
+                  text: `I have these items in my grocery list: ${itemNames}. As a grocery shopping expert, give me 3 specific "Budget Hacks" or "Expert Tips" to save money on these specific types of items. Keep each tip under 12 tokens. Format as a JSON array of strings.`
                 }]
               }]
             })
@@ -182,77 +292,52 @@ function App() {
         )
         const data = await response.json()
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
-        // Parse JSON from response
         const jsonMatch = text.match(/\[[\s\S]*\]/)
         if (jsonMatch) {
-          const ingredients = JSON.parse(jsonMatch[0])
-          addMultipleItems(ingredients)
+          setExpertHacks(JSON.parse(jsonMatch[0]))
         }
       } else {
-        // Demo mode - show example ingredients
-        showNotification('Add VITE_GEMINI_API_KEY to .env for recipe import')
+        setExpertHacks([
+          "Buy store brands for pantry staples to save 30%",
+          "Check the unit price on bulk packs before buying",
+          "Frozen veggies have the same nutrients for less"
+        ])
       }
-    } catch (error) {
-      console.error('Recipe import failed:', error)
-      showNotification('Failed to import recipe')
+    } catch (e) {
+      console.error('Failed to get hacks', e)
     } finally {
-      setIsImporting(false)
-      setRecipeUrl('')
+      setIsLoadingHacks(false)
     }
   }
 
-  // Voice Input - Web Speech API
-  const startVoiceInput = () => {
-    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-      showNotification('Voice input not supported in this browser')
-      return
-    }
-
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    recognitionRef.current = new SpeechRecognition()
-    recognitionRef.current.continuous = false
-    recognitionRef.current.interimResults = false
-
-    recognitionRef.current.onstart = () => setIsListening(true)
-    recognitionRef.current.onend = () => setIsListening(false)
-    recognitionRef.current.onerror = () => {
-      setIsListening(false)
-      showNotification('Voice recognition error')
-    }
-
-    recognitionRef.current.onresult = (event) => {
-      const transcript = event.results[0][0].transcript
-      // Parse items separated by "and", commas, or "comma"
-      const itemList = transcript
-        .toLowerCase()
-        .replace(/\band\b/g, ',')
-        .replace(/\bcomma\b/g, ',')
-        .split(',')
-        .map(s => s.trim())
-        .filter(Boolean)
-
-      addMultipleItems(itemList)
-    }
-
-    recognitionRef.current.start()
+  // Value Calculator Logic
+  const getValueResult = () => {
+    const v1 = parseFloat(calcData.p1) / parseFloat(calcData.w1)
+    const v2 = parseFloat(calcData.p2) / parseFloat(calcData.w2)
+    if (!v1 || !v2) return null
+    return v1 < v2 ? 'Option 1 is better value!' : 'Option 2 is better value!'
   }
 
   const shoppingItems = items.filter(item => !item.inPantry)
+  const groupedItems = Object.entries(CATEGORIES).map(([key, cat]) => ({
+    ...cat,
+    items: items.filter(i => i.category === key)
+  })).filter(cat => cat.items.length > 0)
 
   return (
     <div className="app">
       <div className="container">
         {/* Header */}
         <header className="header">
-          <h1>🛒 Budget Grocery List</h1>
-          <p>Find the best deals across Amazon, Walmart & Target</p>
+          <h1>Budget Grocery List</h1>
+          <p>The smartest way to find deals across Amazon, Walmart, and Target.</p>
         </header>
 
         {/* Budget Input with Progress */}
         <section className="card">
           <div className="card-header">
-            <div className="card-icon icon-budget">💰</div>
-            <h2>Your Budget</h2>
+            <div className="card-icon icon-budget">💎</div>
+            <h2>Grocery Budget</h2>
           </div>
           <div className="input-wrapper">
             <span className="input-prefix">$</span>
@@ -270,13 +355,13 @@ function App() {
             <div className="budget-display">
               <div className="budget-info">
                 <div className="budget-row">
-                  <span className="budget-label">Budget:</span>
+                  <span className="budget-label">Total Budget</span>
                   <span className="budget-amount">${parseFloat(budget).toFixed(2)}</span>
                 </div>
                 <div className="budget-row">
                   <span className="budget-label">Estimated:</span>
                   <span className={`budget-estimated ${isOverBudget ? 'over-budget' : ''}`}>
-                    ${estimatedTotal.toFixed(2)}
+                    ${estimatedTotal.toFixed(2)} Estimated
                   </span>
                 </div>
                 <div className="progress-bar">
@@ -295,34 +380,72 @@ function App() {
           )}
         </section>
 
-        {/* Recipe Import */}
-        <section className="card">
-          <div className="card-header">
-            <div className="card-icon icon-recipe">🍳</div>
-            <h2>Import Recipe</h2>
-          </div>
-          <div className="input-group">
-            <input
-              type="text"
-              placeholder="Paste recipe URL (e.g., allrecipes.com/...)"
-              value={recipeUrl}
-              onChange={(e) => setRecipeUrl(e.target.value)}
-            />
+        {/* Staple Quick-Add */}
+        <section className="staples-tray">
+          {STAPLES.map(staple => (
             <button
-              className="btn btn-primary"
-              onClick={importRecipe}
-              disabled={isImporting}
+              key={staple.name}
+              className="staple-chip"
+              onClick={() => addItem(staple.name)}
             >
-              {isImporting ? '⏳ Importing...' : '📥 Import'}
+              <span>{staple.icon}</span> {staple.name}
             </button>
-          </div>
+          ))}
+          <button className="staple-chip calc-toggle" onClick={() => setShowCalc(!showCalc)}>
+            ⚖️ Value Calc
+          </button>
         </section>
+
+        {/* Value Calculator Tool */}
+        {showCalc && (
+          <section className="card value-calc-card">
+            <div className="card-header">
+              <div className="card-icon icon-results">⚖️</div>
+              <h2>Value Comparison</h2>
+            </div>
+            <div className="calc-grid">
+              <div className="calc-col">
+                <p>Option 1</p>
+                <input type="number" placeholder="Price $" value={calcData.p1} onChange={e => setCalcData({ ...calcData, p1: e.target.value })} />
+                <input type="number" placeholder="Weight/Vol" value={calcData.w1} onChange={e => setCalcData({ ...calcData, w1: e.target.value })} />
+              </div>
+              <div className="calc-col">
+                <p>Option 2</p>
+                <input type="number" placeholder="Price $" value={calcData.p2} onChange={e => setCalcData({ ...calcData, p2: e.target.value })} />
+                <input type="number" placeholder="Weight/Vol" value={calcData.w2} onChange={e => setCalcData({ ...calcData, w2: e.target.value })} />
+              </div>
+            </div>
+            {getValueResult() && <div className="calc-result">{getValueResult()}</div>}
+          </section>
+        )}
+
+        {/* Expert Advice Section */}
+        {shoppingItems.length > 0 && (
+          <section className="card expert-card">
+            <div className="card-header">
+              <div className="card-icon icon-recipe">🧠</div>
+              <h2>Expert Budget Hacks</h2>
+              <button className="btn btn-secondary btn-small" onClick={getExpertAdvice} disabled={isLoadingHacks}>
+                {isLoadingHacks ? 'Analyzing...' : 'Refresh Hacks'}
+              </button>
+            </div>
+            {expertHacks.length > 0 ? (
+              <ul className="hacks-list">
+                {expertHacks.map((hack, i) => (
+                  <li key={i} className="hack-item">💡 {hack}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="hack-promo">Need to save more? Let the expert analyze your list for hacks.</p>
+            )}
+          </section>
+        )}
 
         {/* Item Input */}
         <section className="card">
           <div className="card-header">
-            <div className="card-icon icon-items">📝</div>
-            <h2>Add Items</h2>
+            <div className="card-icon icon-items">🥑</div>
+            <h2>Shopping List</h2>
           </div>
           <div className="input-group">
             <input
@@ -345,43 +468,55 @@ function App() {
           </div>
 
           {items.length > 0 ? (
-            <ul className="item-list">
-              {items.map((item, index) => (
-                <li key={index} className={`item-row ${item.inPantry ? 'in-pantry' : ''}`}>
-                  <button
-                    className={`btn-checkbox ${item.inPantry ? 'checked' : ''}`}
-                    onClick={() => togglePantry(index)}
-                    title={item.inPantry ? 'Need to buy' : 'Already have'}
-                  >
-                    {item.inPantry ? '✓' : ''}
-                  </button>
-                  <span className={item.inPantry ? 'strikethrough' : ''}>{item.name}</span>
-                  <div className="price-input-wrapper">
-                    <span className="price-prefix">$</span>
-                    <input
-                      type="number"
-                      className="price-input"
-                      placeholder="Est."
-                      value={item.estimatedPrice}
-                      onChange={(e) => updatePrice(index, e.target.value)}
-                      min="0"
-                      step="0.01"
-                    />
-                  </div>
-                  <button
-                    className="btn btn-icon btn-danger"
-                    onClick={() => removeItem(index)}
-                    aria-label="Remove item"
-                  >
-                    ✕
-                  </button>
-                </li>
+            <div className="grouped-list">
+              {groupedItems.map(group => (
+                <div key={group.label} className="category-group">
+                  <h3 className="category-header">
+                    <span>{group.icon}</span> {group.label}
+                  </h3>
+                  <ul className="item-list">
+                    {group.items.map((item, index) => {
+                      const actualIndex = items.findIndex(i => i.name === item.name);
+                      return (
+                        <li key={actualIndex} className={`item-row ${item.inPantry ? 'in-pantry' : ''}`}>
+                          <button
+                            className={`btn-checkbox ${item.inPantry ? 'checked' : ''}`}
+                            onClick={() => togglePantry(actualIndex)}
+                            title={item.inPantry ? 'Need to buy' : 'Already have'}
+                          >
+                            {item.inPantry ? '✓' : ''}
+                          </button>
+                          <span className={item.inPantry ? 'strikethrough' : ''}>{item.name}</span>
+                          <div className="price-input-wrapper">
+                            <span className="price-prefix">$</span>
+                            <input
+                              type="number"
+                              className="price-input"
+                              placeholder="Est."
+                              value={item.estimatedPrice}
+                              onChange={(e) => updatePrice(actualIndex, e.target.value)}
+                              min="0"
+                              step="0.01"
+                            />
+                          </div>
+                          <button
+                            className="btn btn-icon btn-danger"
+                            onClick={() => removeItem(actualIndex)}
+                            aria-label="Remove item"
+                          >
+                            ✕
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
               ))}
-            </ul>
+            </div>
           ) : (
             <div className="empty-state">
-              <span>🛍️</span>
-              <p>Add items above to build your shopping list</p>
+              <span>🥑</span>
+              <p>Your shopping list is empty. Add items to get started.</p>
             </div>
           )}
         </section>
