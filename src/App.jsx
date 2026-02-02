@@ -34,6 +34,14 @@ function App() {
   const [isImporting, setIsImporting] = useState(false)
   const [isListening, setIsListening] = useState(false)
 
+  // Expert features state
+  const [expertHacks, setExpertHacks] = useState([])
+  const [isLoadingHacks, setIsLoadingHacks] = useState(false)
+  const [showCalc, setShowCalc] = useState(false)
+  const [calcData, setCalcData] = useState({ p1: '', w1: '', p2: '', w2: '' })
+
+  const recognitionRef = useRef(null)
+
   // Recipe URL Import - extract ingredients using Gemini
   const importRecipe = async () => {
     if (!recipeUrl.trim()) return
