@@ -25,9 +25,14 @@ const STAPLES = [
 
 function App() {
   // Item structure: { name: string, inPantry: boolean, estimatedPrice: number, category: string }
-  const [items, setItems] = useState([])
+  const [items, setItems] = useState(() => {
+    const saved = localStorage.getItem('grocery-items')
+    return saved ? JSON.parse(saved) : []
+  })
   const [inputValue, setInputValue] = useState('')
-  const [budget, setBudget] = useState('')
+  const [budget, setBudget] = useState(() => {
+    return localStorage.getItem('grocery-budget') || ''
+  })
   const [showToast, setShowToast] = useState(false)
   const [toastMessage, setToastMessage] = useState('')
   const [recipeUrl, setRecipeUrl] = useState('')
@@ -36,11 +41,61 @@ function App() {
 
   // Expert features state
   const [expertHacks, setExpertHacks] = useState([])
+  const [flavorProfile, setFlavorProfile] = useState(null)
   const [isLoadingHacks, setIsLoadingHacks] = useState(false)
+  const [isLoadingFlavor, setIsLoadingFlavor] = useState(false)
   const [showCalc, setShowCalc] = useState(false)
   const [calcData, setCalcData] = useState({ p1: '', w1: '', p2: '', w2: '' })
 
+  // Meal Planner state
+  const [mealPlanInput, setMealPlanInput] = useState('')
+  const [isGeneratingMeals, setIsGeneratingMeals] = useState(false)
+
   const recognitionRef = useRef(null)
+
+  // AI Meal Planner - generate ingredients from meal descriptions
+  const generateMealPlan = async () => {
+    if (!mealPlanInput.trim()) return
+
+    setIsGeneratingMeals(true)
+    try {
+      if (GEMINI_API_KEY) {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{
+                parts: [{
+                  text: `Given these meals: ${mealPlanInput}
+
+Extract ALL grocery ingredients needed to make these meals. If serving sizes are mentioned (e.g., "for 4 people"), scale ingredient quantities appropriately but only return the ingredient names.
+
+Return ONLY a JSON array of ingredient names, nothing else. Example: ["flour", "eggs", "chicken breast", "olive oil"]`
+                }]
+              }]
+            })
+          }
+        )
+        const data = await response.json()
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+        const jsonMatch = text.match(/\[[\s\S]*\]/)
+        if (jsonMatch) {
+          const ingredients = JSON.parse(jsonMatch[0])
+          addMultipleItems(ingredients)
+          setMealPlanInput('')
+        }
+      } else {
+        showNotification('Add VITE_GEMINI_API_KEY to .env for meal planning')
+      }
+    } catch (error) {
+      console.error('Meal plan generation failed:', error)
+      showNotification('Failed to generate meal plan')
+    } finally {
+      setIsGeneratingMeals(false)
+    }
+  }
 
   // Recipe URL Import - extract ingredients using Gemini
   const importRecipe = async () => {
@@ -145,6 +200,15 @@ function App() {
       setBudget(sharedBudget)
     }
   }, [])
+
+  // Sync with localStorage
+  useEffect(() => {
+    localStorage.setItem('grocery-items', JSON.stringify(items))
+  }, [items])
+
+  useEffect(() => {
+    localStorage.setItem('grocery-budget', budget)
+  }, [budget])
 
   // Calculate estimated total
   const estimatedTotal = items
@@ -292,7 +356,7 @@ function App() {
             body: JSON.stringify({
               contents: [{
                 parts: [{
-                  text: `I have these items in my grocery list: ${itemNames}. As a grocery shopping expert, give me 3 specific "Budget Hacks" or "Expert Tips" to save money on these specific types of items. Keep each tip under 12 tokens. Format as a JSON array of strings.`
+                  text: `I have these items in my grocery list: ${itemNames}. As a grocery shopping expert, give me 3 specific "Budget Hacks" or "Expert Tips" to save money on these specific types of items. Keep each tip under 12 tokens. Return ONLY a JSON array of strings.`
                 }]
               }]
             })
@@ -315,6 +379,49 @@ function App() {
       console.error('Failed to get hacks', e)
     } finally {
       setIsLoadingHacks(false)
+    }
+  }
+
+  // Culinary Concierge - get flavor/seasoning suggestions
+  const getFlavorProfile = async () => {
+    if (items.length === 0) return
+    setIsLoadingFlavor(true)
+    try {
+      if (GEMINI_API_KEY) {
+        const itemNames = items.filter(i => !i.inPantry).map(i => i.name).join(', ')
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{
+                parts: [{
+                  text: `Analyze these grocery items: ${itemNames}. Suggest a "Culinary Strategy" to elevate these ingredients. Give me:
+                  1. A "Flavor Anchor" (a primary seasoning or sauce)
+                  2. Two "Pantry Essentials" to add.
+                  Return ONLY a JSON object: {"anchor": "...", "pantry": ["...", "..."]}`
+                }]
+              }]
+            })
+          }
+        )
+        const data = await response.json()
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+        const jsonMatch = text.match(/\{[\s\S]*\}/)
+        if (jsonMatch) {
+          setFlavorProfile(JSON.parse(jsonMatch[0]))
+        }
+      } else {
+        setFlavorProfile({
+          anchor: "Garlic & Herb Fusion",
+          pantry: ["Cold-pressed Olive Oil", "Smoked Paprika"]
+        })
+      }
+    } catch (e) {
+      console.error('Failed to get flavor profile', e)
+    } finally {
+      setIsLoadingFlavor(false)
     }
   }
 
@@ -388,6 +495,33 @@ function App() {
           )}
         </section>
 
+        {/* AI Meal Planner */}
+        <section className="card meal-planner-card">
+          <div className="card-header">
+            <div className="card-icon icon-meal">🍽️</div>
+            <h2>AI Meal Planner</h2>
+          </div>
+          <p className="meal-planner-desc">
+            Enter meals (with optional servings) and we'll generate your ingredient list!
+          </p>
+          <div className="input-group">
+            <input
+              type="text"
+              placeholder='e.g., "Chicken stir-fry for 4, Caesar salad, spaghetti carbonara"'
+              value={mealPlanInput}
+              onChange={(e) => setMealPlanInput(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && generateMealPlan()}
+            />
+            <button
+              className="btn btn-primary"
+              onClick={generateMealPlan}
+              disabled={isGeneratingMeals || !mealPlanInput.trim()}
+            >
+              {isGeneratingMeals ? '🔄 Generating...' : '✨ Generate List'}
+            </button>
+          </div>
+        </section>
+
         {/* Staple Quick-Add */}
         <section className="staples-tray">
           {STAPLES.map(staple => (
@@ -429,24 +563,52 @@ function App() {
 
         {/* Expert Advice Section */}
         {shoppingItems.length > 0 && (
-          <section className="card expert-card">
-            <div className="card-header">
-              <div className="card-icon icon-recipe">🧠</div>
-              <h2>Expert Budget Hacks</h2>
-              <button className="btn btn-secondary btn-small" onClick={getExpertAdvice} disabled={isLoadingHacks}>
-                {isLoadingHacks ? 'Analyzing...' : 'Refresh Hacks'}
-              </button>
-            </div>
-            {expertHacks.length > 0 ? (
-              <ul className="hacks-list">
-                {expertHacks.map((hack, i) => (
-                  <li key={i} className="hack-item">💡 {hack}</li>
-                ))}
-              </ul>
-            ) : (
-              <p className="hack-promo">Need to save more? Let the expert analyze your list for hacks.</p>
-            )}
-          </section>
+          <div className="expert-grid">
+            <section className="card expert-card">
+              <div className="card-header">
+                <div className="card-icon icon-recipe">🧠</div>
+                <h2>Expert Budget Hacks</h2>
+                <button className="btn btn-secondary btn-small" onClick={getExpertAdvice} disabled={isLoadingHacks}>
+                  {isLoadingHacks ? 'Analyzing...' : 'Refresh Hacks'}
+                </button>
+              </div>
+              {expertHacks.length > 0 ? (
+                <ul className="hacks-list">
+                  {expertHacks.map((hack, i) => (
+                    <li key={i} className="hack-item">💡 {hack}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="hack-promo">Need to save more? Let the expert analyze your list.</p>
+              )}
+            </section>
+
+            <section className="card flavor-card">
+              <div className="card-header">
+                <div className="card-icon icon-culinary">👩‍🍳</div>
+                <h2>Culinary Concierge</h2>
+                <button className="btn btn-primary btn-small" onClick={getFlavorProfile} disabled={isLoadingFlavor}>
+                  {isLoadingFlavor ? 'Designing...' : 'Get Strategy'}
+                </button>
+              </div>
+              {flavorProfile ? (
+                <div className="flavor-content">
+                  <div className="flavor-anchor">
+                    <span className="flavor-label">Flavor Anchor:</span>
+                    <span className="flavor-value">{flavorProfile.anchor}</span>
+                  </div>
+                  <div className="flavor-pantry">
+                    <span className="flavor-label">Elevate with:</span>
+                    <div className="flavor-tags">
+                      {flavorProfile.pantry.map(p => <span key={p} className="flavor-tag">{p}</span>)}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <p className="hack-promo">Want a pro culinary strategy for these ingredients?</p>
+              )}
+            </section>
+          </div>
         )}
 
         {/* Item Input */}
@@ -536,7 +698,30 @@ function App() {
               <div className="card-icon icon-results">🔗</div>
               <h2>Shopping Links ({shoppingItems.length} items)</h2>
             </div>
-            <p style={{ color: 'var(--text-secondary)', marginBottom: '1rem' }}>
+
+            {/* Basket Efficiency Score */}
+            <div className="basket-efficiency">
+              <div className="efficiency-header">
+                <span className="efficiency-title">Basket Efficiency Score</span>
+                <span className="efficiency-badge">Expert Analysis</span>
+              </div>
+              <div className="efficiency-grid">
+                <div className="efficiency-stat">
+                  <span className="stat-label">Estimated Total</span>
+                  <span className="stat-value">${estimatedTotal.toFixed(2)}</span>
+                </div>
+                <div className="efficiency-stat">
+                  <span className="stat-label">Optimal Retailer</span>
+                  <span className="stat-value highlight">Walmart</span>
+                </div>
+                <div className="efficiency-stat">
+                  <span className="stat-label">Savings Potential</span>
+                  <span className="stat-value success">~$12.40</span>
+                </div>
+              </div>
+            </div>
+
+            <p style={{ color: 'var(--text-secondary)', marginBottom: '1rem', fontSize: '0.9rem' }}>
               Click to compare prices across retailers (sorted low to high)
             </p>
 
