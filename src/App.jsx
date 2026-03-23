@@ -1,45 +1,88 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import './App.css'
+import { CATEGORIES, LIST_FILTER } from './constants'
+import {
+  loadAppState,
+  saveAppState,
+  normalizeItem,
+  shareableItemsPayload,
+  parseSharedItems,
+  newId,
+} from './lib/persistence'
+import { geminiGenerateContent, extractText } from './lib/gemini'
+import Toast from './components/Toast'
+import ListTabs from './components/ListTabs'
+import BudgetSection from './components/BudgetSection'
+import MealPlannerSection from './components/MealPlannerSection'
+import RecipeImportSection from './components/RecipeImportSection'
+import StaplesTray from './components/StaplesTray'
+import ValueCalculator from './components/ValueCalculator'
+import ExpertSection from './components/ExpertSection'
+import ShoppingListSection from './components/ShoppingListSection'
+import ShoppingLinksSection from './components/ShoppingLinksSection'
 
-// Gemini API for recipe parsing (uses free tier)
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || ''
-
-const CATEGORIES = {
-  PRODUCE: { label: 'Produce', icon: '🥦', keywords: ['apple', 'banana', 'carrot', 'onion', 'lettuce', 'tomato', 'potato', 'fruit', 'veg', 'berry', 'spinach', 'kale'] },
-  DAIRY: { label: 'Dairy & Eggs', icon: '🥛', keywords: ['milk', 'cheese', 'yogurt', 'butter', 'egg', 'cream', 'sour cream'] },
-  MEAT: { label: 'Meat & Seafood', icon: '🥩', keywords: ['chicken', 'beef', 'pork', 'steak', 'salmon', 'shrimp', 'turkey', 'bacon', 'fish', 'ground'] },
-  FROZEN: { label: 'Frozen', icon: '❄️', keywords: ['ice cream', 'frozen', 'pizza', 'nugget'] },
-  PANTRY: { label: 'Pantry', icon: '🥫', keywords: ['rice', 'pasta', 'sauce', 'bread', 'cereal', 'flour', 'sugar', 'oil', 'spice', 'salt', 'pepper', 'can', 'bean', 'soup'] },
-  SNACKS: { label: 'Snacks & Drinks', icon: '🍿', keywords: ['chip', 'cookie', 'soda', 'juice', 'coffee', 'tea', 'water', 'cracker', 'nut', 'chocolate'] },
-  HOUSEHOLD: { label: 'Household', icon: '🧼', keywords: ['paper', 'soap', 'detergent', 'cleaner', 'bag', 'tinfoil', 'tissue'] },
-  OTHER: { label: 'Other', icon: '📦', keywords: [] }
+function getCategory(name) {
+  const lower = name.toLowerCase()
+  for (const [key, cat] of Object.entries(CATEGORIES)) {
+    if (cat.keywords.some((k) => lower.includes(k))) return key
+  }
+  return 'OTHER'
 }
 
-const STAPLES = [
-  { name: 'Milk', icon: '🥛' },
-  { name: 'Eggs', icon: '🥚' },
-  { name: 'Bread', icon: '🍞' },
-  { name: 'Bananas', icon: '🍌' },
-  { name: 'Coffee', icon: '☕' }
-]
+function filterByListFilter(items, filter) {
+  switch (filter) {
+    case LIST_FILTER.TO_BUY:
+      return items.filter((i) => !i.inPantry && !i.checkedOff)
+    case LIST_FILTER.PANTRY:
+      return items.filter((i) => i.inPantry)
+    case LIST_FILTER.GOT:
+      return items.filter((i) => i.checkedOff)
+    default:
+      return items
+  }
+}
 
-function App() {
-  // Item structure: { name: string, inPantry: boolean, estimatedPrice: number, category: string }
-  const [items, setItems] = useState(() => {
-    const saved = localStorage.getItem('grocery-items')
-    return saved ? JSON.parse(saved) : []
-  })
+function groupFilteredItems(filteredItems) {
+  return Object.entries(CATEGORIES)
+    .map(([key, cat]) => ({
+      ...cat,
+      items: filteredItems.filter((i) => i.category === key),
+    }))
+    .filter((g) => g.items.length > 0)
+}
+
+function useActiveList(app) {
+  return app.lists.find((l) => l.id === app.activeListId) || app.lists[0]
+}
+
+function computeNewGroceryItems(itemNames, existingItems) {
+  const existing = new Set(existingItems.map((i) => i.name.toLowerCase()))
+  return itemNames
+    .map((n) => String(n).trim())
+    .filter((name) => name && !existing.has(name.toLowerCase()))
+    .map((name) => {
+      existing.add(name.toLowerCase())
+      return normalizeItem({
+        name,
+        inPantry: false,
+        checkedOff: false,
+        estimatedPrice: '',
+        category: getCategory(name),
+        note: '',
+      })
+    })
+}
+
+export default function App() {
+  const [app, setApp] = useState(loadAppState)
+  const [listFilter, setListFilter] = useState(LIST_FILTER.ALL)
   const [inputValue, setInputValue] = useState('')
-  const [budget, setBudget] = useState(() => {
-    return localStorage.getItem('grocery-budget') || ''
-  })
   const [showToast, setShowToast] = useState(false)
   const [toastMessage, setToastMessage] = useState('')
   const [recipeUrl, setRecipeUrl] = useState('')
   const [isImporting, setIsImporting] = useState(false)
   const [isListening, setIsListening] = useState(false)
 
-  // Expert features state
   const [expertHacks, setExpertHacks] = useState([])
   const [flavorProfile, setFlavorProfile] = useState(null)
   const [isLoadingHacks, setIsLoadingHacks] = useState(false)
@@ -47,115 +90,203 @@ function App() {
   const [showCalc, setShowCalc] = useState(false)
   const [calcData, setCalcData] = useState({ p1: '', w1: '', p2: '', w2: '' })
 
-  // Meal Planner state
   const [mealPlanInput, setMealPlanInput] = useState('')
   const [isGeneratingMeals, setIsGeneratingMeals] = useState(false)
 
   const recognitionRef = useRef(null)
+  const hydratedFromUrl = useRef(false)
+  const bulkAddedRef = useRef(0)
 
-  // AI Meal Planner - generate ingredients from meal descriptions
+  const showNotification = useCallback((message) => {
+    setToastMessage(message)
+    setShowToast(true)
+    window.setTimeout(() => setShowToast(false), 3200)
+  }, [])
+
+  const activeList = useActiveList(app)
+  const items = activeList?.items ?? []
+  const budget = activeList?.budget ?? ''
+
+  const updateActiveList = useCallback((updater) => {
+    setApp((prev) => ({
+      ...prev,
+      lists: prev.lists.map((l) => (l.id === prev.activeListId ? updater(l) : l)),
+    }))
+  }, [])
+
+  useEffect(() => {
+    saveAppState(app)
+  }, [app])
+
+  useEffect(() => {
+    if (hydratedFromUrl.current) return
+    const params = new URLSearchParams(window.location.search)
+    const sharedItems = params.get('items')
+    const sharedBudget = params.get('budget')
+    if (!sharedItems && !sharedBudget) return
+    hydratedFromUrl.current = true
+
+    setApp((prev) => {
+      const id = prev.activeListId
+      return {
+        ...prev,
+        lists: prev.lists.map((l) => {
+          if (l.id !== id) return l
+          let nextItems = l.items
+          if (sharedItems) {
+            try {
+              nextItems = parseSharedItems(sharedItems)
+            } catch {
+              /* ignore */
+            }
+          }
+          return {
+            ...l,
+            items: nextItems,
+            budget: sharedBudget != null && sharedBudget !== '' ? sharedBudget : l.budget,
+          }
+        }),
+      }
+    })
+    showNotification('Shared list loaded!')
+  }, [showNotification])
+
+  const setBudget = (value) => {
+    updateActiveList((l) => ({ ...l, budget: value }))
+  }
+
+  const addItem = useCallback(
+    (itemName = inputValue) => {
+      const trimmed = (typeof itemName === 'string' ? itemName : inputValue).trim()
+      if (!trimmed) return
+      let added = false
+      updateActiveList((l) => {
+        if (l.items.some((i) => i.name.toLowerCase() === trimmed.toLowerCase())) return l
+        added = true
+        return {
+          ...l,
+          items: [
+            ...l.items,
+            normalizeItem({
+              name: trimmed,
+              inPantry: false,
+              checkedOff: false,
+              estimatedPrice: '',
+              category: getCategory(trimmed),
+              note: '',
+            }),
+          ],
+        }
+      })
+      if (added && itemName === inputValue) setInputValue('')
+    },
+    [inputValue, updateActiveList],
+  )
+
+  const addMultipleItems = useCallback(
+    (itemNames) => {
+      bulkAddedRef.current = 0
+      setApp((prev) => {
+        const id = prev.activeListId
+        const l = prev.lists.find((x) => x.id === id)
+        if (!l) return prev
+        const newItems = computeNewGroceryItems(itemNames, l.items)
+        bulkAddedRef.current = newItems.length
+        if (!newItems.length) return prev
+        return {
+          ...prev,
+          lists: prev.lists.map((x) => (x.id === id ? { ...x, items: [...x.items, ...newItems] } : x)),
+        }
+      })
+      const n = bulkAddedRef.current
+      if (n > 0) showNotification(`Added ${n} item${n !== 1 ? 's' : ''}!`)
+    },
+    [showNotification],
+  )
+
+  const runGeminiJson = async (prompt, regex) => {
+    const data = await geminiGenerateContent({
+      contents: [{ parts: [{ text: prompt }] }],
+    })
+    const text = extractText(data)
+    const m = text.match(regex)
+    if (!m) return null
+    try {
+      return JSON.parse(m[0])
+    } catch {
+      return null
+    }
+  }
+
   const generateMealPlan = async () => {
     if (!mealPlanInput.trim()) return
-
     setIsGeneratingMeals(true)
     try {
-      if (GEMINI_API_KEY) {
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{
-                parts: [{
-                  text: `Given these meals: ${mealPlanInput}
+      const ingredients = await runGeminiJson(
+        `Given these meals: ${mealPlanInput}
 
 Extract ALL grocery ingredients needed to make these meals. If serving sizes are mentioned (e.g., "for 4 people"), scale ingredient quantities appropriately but only return the ingredient names.
 
-Return ONLY a JSON array of ingredient names, nothing else. Example: ["flour", "eggs", "chicken breast", "olive oil"]`
-                }]
-              }]
-            })
-          }
-        )
-        const data = await response.json()
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
-        const jsonMatch = text.match(/\[[\s\S]*\]/)
-        if (jsonMatch) {
-          const ingredients = JSON.parse(jsonMatch[0])
-          addMultipleItems(ingredients)
-          setMealPlanInput('')
-        }
+Return ONLY a JSON array of ingredient names, nothing else. Example: ["flour", "eggs", "chicken breast", "olive oil"]`,
+        /\[[\s\S]*\]/,
+      )
+      if (ingredients?.length) {
+        addMultipleItems(ingredients)
+        setMealPlanInput('')
       } else {
-        showNotification('Add VITE_GEMINI_API_KEY to .env for meal planning')
+        showNotification('Could not parse ingredients. Try simpler phrasing.')
       }
-    } catch (error) {
-      console.error('Meal plan generation failed:', error)
-      showNotification('Failed to generate meal plan')
+    } catch (e) {
+      if (e.message === 'NO_GEMINI') {
+        showNotification('Add VITE_GEMINI_API_KEY or VITE_GEMINI_PROXY_URL for meal planning.')
+      } else {
+        showNotification('Failed to generate meal plan.')
+      }
     } finally {
       setIsGeneratingMeals(false)
     }
   }
 
-  // Recipe URL Import - extract ingredients using Gemini
   const importRecipe = async () => {
     if (!recipeUrl.trim()) return
-
     setIsImporting(true)
     try {
-      if (GEMINI_API_KEY) {
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{
-                parts: [{
-                  text: `Extract just the ingredient names (not quantities) from this recipe URL: ${recipeUrl}. Return only a JSON array of ingredient names, nothing else. Example: ["flour", "sugar", "eggs"]`
-                }]
-              }]
-            })
-          }
-        )
-        const data = await response.json()
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
-        const jsonMatch = text.match(/\[[\s\S]*\]/)
-        if (jsonMatch) {
-          const ingredients = JSON.parse(jsonMatch[0])
-          addMultipleItems(ingredients)
-        }
+      const ingredients = await runGeminiJson(
+        `Extract just the ingredient names (not quantities) from this recipe URL: ${recipeUrl}. Return only a JSON array of ingredient names, nothing else. Example: ["flour", "sugar", "eggs"]`,
+        /\[[\s\S]*\]/,
+      )
+      if (ingredients?.length) {
+        addMultipleItems(ingredients)
       } else {
-        showNotification('Add VITE_GEMINI_API_KEY to .env for recipe import')
+        showNotification('No ingredients found. Try another URL.')
       }
-    } catch (error) {
-      console.error('Recipe import failed:', error)
-      showNotification('Failed to import recipe')
+    } catch (e) {
+      if (e.message === 'NO_GEMINI') {
+        showNotification('Add VITE_GEMINI_API_KEY or VITE_GEMINI_PROXY_URL for recipe import.')
+      } else {
+        showNotification('Failed to import recipe.')
+      }
     } finally {
       setIsImporting(false)
       setRecipeUrl('')
     }
   }
 
-  // Voice Input - Web Speech API
   const startVoiceInput = () => {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-      showNotification('Voice input not supported in this browser')
+      showNotification('Voice input is not supported in this browser.')
       return
     }
-
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
     recognitionRef.current = new SpeechRecognition()
     recognitionRef.current.continuous = false
     recognitionRef.current.interimResults = false
-
     recognitionRef.current.onstart = () => setIsListening(true)
     recognitionRef.current.onend = () => setIsListening(false)
     recognitionRef.current.onerror = () => {
       setIsListening(false)
-      showNotification('Voice recognition error')
+      showNotification('Voice recognition error.')
     }
-
     recognitionRef.current.onresult = (event) => {
       const transcript = event.results[0][0].transcript
       const itemList = transcript
@@ -163,638 +294,308 @@ Return ONLY a JSON array of ingredient names, nothing else. Example: ["flour", "
         .replace(/\band\b/g, ',')
         .replace(/\bcomma\b/g, ',')
         .split(',')
-        .map(s => s.trim())
+        .map((s) => s.trim())
         .filter(Boolean)
-
       addMultipleItems(itemList)
     }
-
     recognitionRef.current.start()
   }
 
-  // Categorization helper
-  const getCategory = (name) => {
-    const lower = name.toLowerCase()
-    for (const [key, cat] of Object.entries(CATEGORIES)) {
-      if (cat.keywords.some(k => lower.includes(k))) return key
-    }
-    return 'OTHER'
-  }
-
-  // Load from URL params on mount (Share via Link restore)
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    const sharedItems = params.get('items')
-    const sharedBudget = params.get('budget')
-
-    if (sharedItems) {
-      try {
-        const parsed = JSON.parse(decodeURIComponent(sharedItems))
-        setItems(parsed)
-        showNotification('Shared list loaded!')
-      } catch (e) {
-        console.error('Failed to parse shared items', e)
-      }
-    }
-    if (sharedBudget) {
-      setBudget(sharedBudget)
-    }
-  }, [])
-
-  // Sync with localStorage
-  useEffect(() => {
-    localStorage.setItem('grocery-items', JSON.stringify(items))
-  }, [items])
-
-  useEffect(() => {
-    localStorage.setItem('grocery-budget', budget)
-  }, [budget])
-
-  // Calculate estimated total
-  const estimatedTotal = items
-    .filter(item => !item.inPantry)
-    .reduce((sum, item) => sum + (parseFloat(item.estimatedPrice) || 0), 0)
-
+  const estimatedTotal = items.filter((i) => !i.inPantry).reduce((sum, i) => sum + (parseFloat(i.estimatedPrice) || 0), 0)
   const budgetNum = parseFloat(budget) || 0
   const isOverBudget = budgetNum > 0 && estimatedTotal > budgetNum
   const budgetProgress = budgetNum > 0 ? Math.min((estimatedTotal / budgetNum) * 100, 100) : 0
 
-  // Generate search URLs for different retailers
   const generateAmazonUrl = (itemName) => {
     const searchQuery = encodeURIComponent(itemName)
     return `https://www.amazon.com/s?k=${searchQuery}&s=price-asc-rank`
   }
-
   const generateWalmartUrl = (itemName) => {
     const searchQuery = encodeURIComponent(itemName)
     return `https://www.walmart.com/search?q=${searchQuery}&sort=price_low`
   }
-
   const generateTargetUrl = (itemName) => {
     const searchQuery = encodeURIComponent(itemName)
     return `https://www.target.com/s?searchTerm=${searchQuery}&sortBy=PriceLow`
   }
 
-  // Add item to list
-  const addItem = useCallback((itemName = inputValue) => {
-    const trimmed = (typeof itemName === 'string' ? itemName : inputValue).trim()
-    if (trimmed && !items.find(i => i.name.toLowerCase() === trimmed.toLowerCase())) {
-      setItems(prev => [...prev, {
-        name: trimmed,
-        inPantry: false,
-        estimatedPrice: '',
-        category: getCategory(trimmed)
-      }])
-      if (itemName === inputValue) setInputValue('')
-    }
-  }, [inputValue, items])
-
-  // Add multiple items (from voice or recipe)
-  const addMultipleItems = (itemNames) => {
-    const newItems = itemNames
-      .map(name => name.trim())
-      .filter(name => name && !items.find(i => i.name.toLowerCase() === name.toLowerCase()))
-      .map(name => ({
-        name,
-        inPantry: false,
-        estimatedPrice: '',
-        category: getCategory(name)
-      }))
-
-    if (newItems.length > 0) {
-      setItems(prev => [...prev, ...newItems])
-      showNotification(`Added ${newItems.length} item${newItems.length > 1 ? 's' : ''}!`)
-    }
+  const removeItem = (id) => {
+    updateActiveList((l) => ({ ...l, items: l.items.filter((i) => i.id !== id) }))
   }
 
-  // Handle Enter key
-  const handleKeyPress = (e) => {
-    if (e.key === 'Enter') {
-      addItem()
-    }
+  const togglePantry = (id) => {
+    updateActiveList((l) => ({
+      ...l,
+      items: l.items.map((i) => {
+        if (i.id !== id) return i
+        if (i.inPantry) return { ...i, inPantry: false }
+        return { ...i, inPantry: true, checkedOff: false }
+      }),
+    }))
   }
 
-  // Remove item
-  const removeItem = (index) => {
-    setItems(prev => prev.filter((_, i) => i !== index))
+  const toggleCheckedOff = (id) => {
+    updateActiveList((l) => ({
+      ...l,
+      items: l.items.map((i) => (i.id === id ? { ...i, checkedOff: !i.checkedOff } : i)),
+    }))
   }
 
-  // Toggle pantry status
-  const togglePantry = (index) => {
-    setItems(prev => prev.map((item, i) =>
-      i === index ? { ...item, inPantry: !item.inPantry } : item
-    ))
+  const updatePrice = (id, price) => {
+    updateActiveList((l) => ({
+      ...l,
+      items: l.items.map((i) => (i.id === id ? { ...i, estimatedPrice: price } : i)),
+    }))
   }
 
-  // Update estimated price
-  const updatePrice = (index, price) => {
-    setItems(prev => prev.map((item, i) =>
-      i === index ? { ...item, estimatedPrice: price } : item
-    ))
+  const updateNote = (id, note) => {
+    updateActiveList((l) => ({
+      ...l,
+      items: l.items.map((i) => (i.id === id ? { ...i, note } : i)),
+    }))
   }
 
-  // Show toast notification
-  const showNotification = (message) => {
-    setToastMessage(message)
-    setShowToast(true)
-    setTimeout(() => setShowToast(false), 3000)
+  const resetTripCheckmarks = () => {
+    updateActiveList((l) => ({
+      ...l,
+      items: l.items.map((i) => ({ ...i, checkedOff: false })),
+    }))
+    showNotification('Trip checkmarks cleared.')
   }
 
-  // Copy all links to clipboard
   const copyAllLinks = (retailer = 'amazon') => {
-    const shoppingItems = items.filter(item => !item.inPantry)
-    const urlGenerator = retailer === 'walmart' ? generateWalmartUrl
-      : retailer === 'target' ? generateTargetUrl
-        : generateAmazonUrl
-    const links = shoppingItems.map(item => urlGenerator(item.name)).join('\n')
+    const shoppingItems = items.filter((i) => !i.inPantry && !i.checkedOff)
+    const urlGenerator =
+      retailer === 'walmart' ? generateWalmartUrl : retailer === 'target' ? generateTargetUrl : generateAmazonUrl
+    const links = shoppingItems.map((item) => urlGenerator(item.name)).join('\n')
     navigator.clipboard.writeText(links).then(() => {
-      showNotification(`All ${retailer} links copied!`)
+      showNotification(`Copied ${retailer} links.`)
     })
   }
 
-  // Open all in new tabs
   const openAllLinks = (retailer = 'amazon') => {
-    const shoppingItems = items.filter(item => !item.inPantry)
-    const urlGenerator = retailer === 'walmart' ? generateWalmartUrl
-      : retailer === 'target' ? generateTargetUrl
-        : generateAmazonUrl
+    const shoppingItems = items.filter((i) => !i.inPantry && !i.checkedOff)
+    const urlGenerator =
+      retailer === 'walmart' ? generateWalmartUrl : retailer === 'target' ? generateTargetUrl : generateAmazonUrl
     shoppingItems.forEach((item, index) => {
       setTimeout(() => {
         window.open(urlGenerator(item.name), '_blank')
       }, index * 300)
     })
-    showNotification(`Opening ${shoppingItems.length} ${retailer} searches...`)
+    showNotification(`Opening ${shoppingItems.length} ${retailer} searches…`)
   }
 
-  // Clear all items
   const clearAll = () => {
-    setItems([])
-    showNotification('List cleared!')
+    updateActiveList((l) => ({ ...l, items: [] }))
+    showNotification('List cleared.')
   }
 
-  // Share via Link - generate shareable URL
   const shareList = () => {
-    const shareData = encodeURIComponent(JSON.stringify(items))
-    const shareUrl = `${window.location.origin}${window.location.pathname}?items=${shareData}${budget ? `&budget=${budget}` : ''}`
+    const payload = shareableItemsPayload(items)
+    const shareData = encodeURIComponent(JSON.stringify(payload))
+    const shareUrl = `${window.location.origin}${window.location.pathname}?items=${shareData}${budget ? `&budget=${encodeURIComponent(budget)}` : ''}`
     navigator.clipboard.writeText(shareUrl).then(() => {
-      showNotification('Share link copied to clipboard!')
+      showNotification('Share link copied to clipboard.')
     })
   }
 
-  // Get Expert Budget Hacks from Gemini
   const getExpertAdvice = async () => {
     if (items.length === 0) return
     setIsLoadingHacks(true)
     try {
-      if (GEMINI_API_KEY) {
-        const itemNames = items.filter(i => !i.inPantry).map(i => i.name).join(', ')
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{
-                parts: [{
-                  text: `I have these items in my grocery list: ${itemNames}. As a grocery shopping expert, give me 3 specific "Budget Hacks" or "Expert Tips" to save money on these specific types of items. Keep each tip under 12 tokens. Return ONLY a JSON array of strings.`
-                }]
-              }]
-            })
-          }
-        )
-        const data = await response.json()
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
-        const jsonMatch = text.match(/\[[\s\S]*\]/)
-        if (jsonMatch) {
-          setExpertHacks(JSON.parse(jsonMatch[0]))
-        }
-      } else {
+      const itemNames = items.filter((i) => !i.inPantry).map((i) => i.name).join(', ')
+      const hacks = await runGeminiJson(
+        `I have these items in my grocery list: ${itemNames}. As a grocery shopping expert, give me 3 specific "Budget Hacks" or "Expert Tips" to save money on these specific types of items. Keep each tip under 12 tokens. Return ONLY a JSON array of strings.`,
+        /\[[\s\S]*\]/,
+      )
+      if (hacks?.length) setExpertHacks(hacks)
+      else
         setExpertHacks([
-          "Buy store brands for pantry staples to save 30%",
-          "Check the unit price on bulk packs before buying",
-          "Frozen veggies have the same nutrients for less"
+          'Buy store brands for pantry staples to save about 30%.',
+          'Check the unit price on bulk packs before you buy.',
+          'Frozen vegetables match fresh nutrition for less.',
         ])
-      }
-    } catch (e) {
-      console.error('Failed to get hacks', e)
+    } catch {
+      setExpertHacks([
+        'Buy store brands for pantry staples to save about 30%.',
+        'Check the unit price on bulk packs before you buy.',
+        'Frozen vegetables match fresh nutrition for less.',
+      ])
     } finally {
       setIsLoadingHacks(false)
     }
   }
 
-  // Culinary Concierge - get flavor/seasoning suggestions
   const getFlavorProfile = async () => {
     if (items.length === 0) return
     setIsLoadingFlavor(true)
     try {
-      if (GEMINI_API_KEY) {
-        const itemNames = items.filter(i => !i.inPantry).map(i => i.name).join(', ')
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{
-                parts: [{
-                  text: `Analyze these grocery items: ${itemNames}. Suggest a "Culinary Strategy" to elevate these ingredients. Give me:
+      const itemNames = items.filter((i) => !i.inPantry).map((i) => i.name).join(', ')
+      const profile = await runGeminiJson(
+        `Analyze these grocery items: ${itemNames}. Suggest a "Culinary Strategy" to elevate these ingredients. Give me:
                   1. A "Flavor Anchor" (a primary seasoning or sauce)
                   2. Two "Pantry Essentials" to add.
-                  Return ONLY a JSON object: {"anchor": "...", "pantry": ["...", "..."]}`
-                }]
-              }]
-            })
-          }
-        )
-        const data = await response.json()
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
-        const jsonMatch = text.match(/\{[\s\S]*\}/)
-        if (jsonMatch) {
-          setFlavorProfile(JSON.parse(jsonMatch[0]))
-        }
-      } else {
+                  Return ONLY a JSON object: {"anchor": "...", "pantry": ["...", "..."]}`,
+        /\{[\s\S]*\}/,
+      )
+      if (profile?.anchor && Array.isArray(profile.pantry)) setFlavorProfile(profile)
+      else
         setFlavorProfile({
-          anchor: "Garlic & Herb Fusion",
-          pantry: ["Cold-pressed Olive Oil", "Smoked Paprika"]
+          anchor: 'Garlic and herb blend',
+          pantry: ['Cold-pressed olive oil', 'Smoked paprika'],
         })
-      }
-    } catch (e) {
-      console.error('Failed to get flavor profile', e)
+    } catch {
+      setFlavorProfile({
+        anchor: 'Garlic and herb blend',
+        pantry: ['Cold-pressed olive oil', 'Smoked paprika'],
+      })
     } finally {
       setIsLoadingFlavor(false)
     }
   }
 
-  // Value Calculator Logic
   const getValueResult = () => {
     const v1 = parseFloat(calcData.p1) / parseFloat(calcData.w1)
     const v2 = parseFloat(calcData.p2) / parseFloat(calcData.w2)
-    if (!v1 || !v2) return null
-    return v1 < v2 ? 'Option 1 is better value!' : 'Option 2 is better value!'
+    if (!v1 || !v2 || !Number.isFinite(v1) || !Number.isFinite(v2)) return null
+    return v1 < v2 ? 'Option 1 is the better per-unit deal.' : 'Option 2 is the better per-unit deal.'
   }
 
-  const shoppingItems = items.filter(item => !item.inPantry)
-  const groupedItems = Object.entries(CATEGORIES).map(([key, cat]) => ({
-    ...cat,
-    items: items.filter(i => i.category === key)
-  })).filter(cat => cat.items.length > 0)
+  const shoppingItems = items.filter((i) => !i.inPantry && !i.checkedOff)
+  const filteredItems = filterByListFilter(items, listFilter)
+  const groupedItems = groupFilteredItems(filteredItems)
+  const filteredEmpty = items.length > 0 && filteredItems.length === 0
+  const hasCheckedOff = items.some((i) => i.checkedOff)
+
+  const needFromStore = items.filter((i) => !i.inPantry && !i.checkedOff)
+  const categoryCount = new Set(needFromStore.map((i) => i.category)).size
+  const pricedNeedCount = needFromStore.filter((i) => parseFloat(i.estimatedPrice) > 0).length
+
+  const selectList = (id) => {
+    setApp((prev) => ({ ...prev, activeListId: id }))
+    setListFilter(LIST_FILTER.ALL)
+  }
+
+  const addList = (name) => {
+    const id = newId()
+    setApp((prev) => ({
+      ...prev,
+      lists: [...prev.lists, { id, name, budget: '', items: [] }],
+      activeListId: id,
+    }))
+    setListFilter(LIST_FILTER.ALL)
+    showNotification(`Created “${name}”.`)
+  }
+
+  const renameList = (listId, name) => {
+    setApp((prev) => ({
+      ...prev,
+      lists: prev.lists.map((l) => (l.id === listId ? { ...l, name } : l)),
+    }))
+  }
 
   return (
     <div className="app">
+      <a href="#main-content" className="skip-link">
+        Skip to main content
+      </a>
       <div className="container">
-        {/* Header */}
         <header className="header">
           <h1>Budget Grocery List</h1>
-          <p>The smartest way to find deals across Amazon, Walmart, and Target.</p>
+          <p>Lists, budgets, and price-sorted links across Amazon, Walmart, and Target—offline-ready.</p>
         </header>
 
-        {/* Budget Input with Progress */}
-        <section className="card">
-          <div className="card-header">
-            <div className="card-icon icon-budget">💎</div>
-            <h2>Grocery Budget</h2>
-          </div>
-          <div className="input-wrapper">
-            <span className="input-prefix">$</span>
-            <input
-              type="number"
-              className="has-prefix"
-              placeholder="Enter your budget"
-              value={budget}
-              onChange={(e) => setBudget(e.target.value)}
-              min="0"
-              step="0.01"
+        <ListTabs
+          lists={app.lists}
+          activeListId={app.activeListId}
+          onSelect={selectList}
+          onAddList={addList}
+          onRenameList={renameList}
+        />
+
+        <main id="main-content">
+          <BudgetSection
+            budget={budget}
+            onBudgetChange={setBudget}
+            estimatedTotal={estimatedTotal}
+            budgetNum={budgetNum}
+            isOverBudget={isOverBudget}
+            budgetProgress={budgetProgress}
+          />
+
+          <MealPlannerSection
+            mealPlanInput={mealPlanInput}
+            onMealPlanChange={setMealPlanInput}
+            onGenerate={generateMealPlan}
+            isGeneratingMeals={isGeneratingMeals}
+          />
+
+          <RecipeImportSection
+            recipeUrl={recipeUrl}
+            onRecipeUrlChange={setRecipeUrl}
+            onImport={importRecipe}
+            isImporting={isImporting}
+          />
+
+          <StaplesTray showCalc={showCalc} onToggleCalc={() => setShowCalc((v) => !v)} onAddStaple={(n) => addItem(n)} />
+
+          {showCalc && <ValueCalculator calcData={calcData} onCalcChange={setCalcData} result={getValueResult()} />}
+
+          {shoppingItems.length > 0 && (
+            <ExpertSection
+              expertHacks={expertHacks}
+              onRefreshHacks={getExpertAdvice}
+              isLoadingHacks={isLoadingHacks}
+              flavorProfile={flavorProfile}
+              onGetFlavor={getFlavorProfile}
+              isLoadingFlavor={isLoadingFlavor}
             />
-          </div>
-          {budget && (
-            <div className="budget-display">
-              <div className="budget-info">
-                <div className="budget-row">
-                  <span className="budget-label">Total Budget</span>
-                  <span className="budget-amount">${parseFloat(budget).toFixed(2)}</span>
-                </div>
-                <div className="budget-row">
-                  <span className="budget-label">Estimated:</span>
-                  <span className={`budget-estimated ${isOverBudget ? 'over-budget' : ''}`}>
-                    ${estimatedTotal.toFixed(2)} Estimated
-                  </span>
-                </div>
-                <div className="progress-bar">
-                  <div
-                    className={`progress-fill ${isOverBudget ? 'over-budget' : ''}`}
-                    style={{ width: `${budgetProgress}%` }}
-                  />
-                </div>
-                {isOverBudget && (
-                  <div className="over-budget-warning">
-                    ⚠️ Over budget by ${(estimatedTotal - budgetNum).toFixed(2)}
-                  </div>
-                )}
-              </div>
-            </div>
           )}
-        </section>
 
-        {/* AI Meal Planner */}
-        <section className="card meal-planner-card">
-          <div className="card-header">
-            <div className="card-icon icon-meal">🍽️</div>
-            <h2>AI Meal Planner</h2>
-          </div>
-          <p className="meal-planner-desc">
-            Enter meals (with optional servings) and we'll generate your ingredient list!
-          </p>
-          <div className="input-group">
-            <input
-              type="text"
-              placeholder='e.g., "Chicken stir-fry for 4, Caesar salad, spaghetti carbonara"'
-              value={mealPlanInput}
-              onChange={(e) => setMealPlanInput(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && generateMealPlan()}
+          <ShoppingListSection
+            inputValue={inputValue}
+            onInputChange={setInputValue}
+            onAddItem={addItem}
+            onKeyDownAdd={(e) => {
+              if (e.key === 'Enter') addItem()
+            }}
+            onVoiceClick={startVoiceInput}
+            isListening={isListening}
+            listFilter={listFilter}
+            onListFilterChange={setListFilter}
+            groupedItems={groupedItems}
+            items={items}
+            filteredEmpty={filteredEmpty}
+            onTogglePantry={togglePantry}
+            onToggleCheckedOff={toggleCheckedOff}
+            onUpdatePrice={updatePrice}
+            onUpdateNote={updateNote}
+            onRemoveItem={removeItem}
+            onResetTrip={resetTripCheckmarks}
+            hasCheckedOff={hasCheckedOff}
+          />
+
+          {shoppingItems.length > 0 && (
+            <ShoppingLinksSection
+              shoppingItems={shoppingItems}
+              estimatedTotal={estimatedTotal}
+              budgetNum={budgetNum}
+              generateAmazonUrl={generateAmazonUrl}
+              generateWalmartUrl={generateWalmartUrl}
+              generateTargetUrl={generateTargetUrl}
+              onOpenAll={openAllLinks}
+              onCopyLinks={copyAllLinks}
+              onShare={shareList}
+              onClearAll={clearAll}
+              pricedNeedCount={pricedNeedCount}
+              needCount={needFromStore.length}
+              categoryCount={categoryCount}
             />
-            <button
-              className="btn btn-primary"
-              onClick={generateMealPlan}
-              disabled={isGeneratingMeals || !mealPlanInput.trim()}
-            >
-              {isGeneratingMeals ? '🔄 Generating...' : '✨ Generate List'}
-            </button>
-          </div>
-        </section>
-
-        {/* Staple Quick-Add */}
-        <section className="staples-tray">
-          {STAPLES.map(staple => (
-            <button
-              key={staple.name}
-              className="staple-chip"
-              onClick={() => addItem(staple.name)}
-            >
-              <span>{staple.icon}</span> {staple.name}
-            </button>
-          ))}
-          <button className="staple-chip calc-toggle" onClick={() => setShowCalc(!showCalc)}>
-            ⚖️ Value Calc
-          </button>
-        </section>
-
-        {/* Value Calculator Tool */}
-        {showCalc && (
-          <section className="card value-calc-card">
-            <div className="card-header">
-              <div className="card-icon icon-results">⚖️</div>
-              <h2>Value Comparison</h2>
-            </div>
-            <div className="calc-grid">
-              <div className="calc-col">
-                <p>Option 1</p>
-                <input type="number" placeholder="Price $" value={calcData.p1} onChange={e => setCalcData({ ...calcData, p1: e.target.value })} />
-                <input type="number" placeholder="Weight/Vol" value={calcData.w1} onChange={e => setCalcData({ ...calcData, w1: e.target.value })} />
-              </div>
-              <div className="calc-col">
-                <p>Option 2</p>
-                <input type="number" placeholder="Price $" value={calcData.p2} onChange={e => setCalcData({ ...calcData, p2: e.target.value })} />
-                <input type="number" placeholder="Weight/Vol" value={calcData.w2} onChange={e => setCalcData({ ...calcData, w2: e.target.value })} />
-              </div>
-            </div>
-            {getValueResult() && <div className="calc-result">{getValueResult()}</div>}
-          </section>
-        )}
-
-        {/* Expert Advice Section */}
-        {shoppingItems.length > 0 && (
-          <div className="expert-grid">
-            <section className="card expert-card">
-              <div className="card-header">
-                <div className="card-icon icon-recipe">🧠</div>
-                <h2>Expert Budget Hacks</h2>
-                <button className="btn btn-secondary btn-small" onClick={getExpertAdvice} disabled={isLoadingHacks}>
-                  {isLoadingHacks ? 'Analyzing...' : 'Refresh Hacks'}
-                </button>
-              </div>
-              {expertHacks.length > 0 ? (
-                <ul className="hacks-list">
-                  {expertHacks.map((hack, i) => (
-                    <li key={i} className="hack-item">💡 {hack}</li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="hack-promo">Need to save more? Let the expert analyze your list.</p>
-              )}
-            </section>
-
-            <section className="card flavor-card">
-              <div className="card-header">
-                <div className="card-icon icon-culinary">👩‍🍳</div>
-                <h2>Culinary Concierge</h2>
-                <button className="btn btn-primary btn-small" onClick={getFlavorProfile} disabled={isLoadingFlavor}>
-                  {isLoadingFlavor ? 'Designing...' : 'Get Strategy'}
-                </button>
-              </div>
-              {flavorProfile ? (
-                <div className="flavor-content">
-                  <div className="flavor-anchor">
-                    <span className="flavor-label">Flavor Anchor:</span>
-                    <span className="flavor-value">{flavorProfile.anchor}</span>
-                  </div>
-                  <div className="flavor-pantry">
-                    <span className="flavor-label">Elevate with:</span>
-                    <div className="flavor-tags">
-                      {flavorProfile.pantry.map(p => <span key={p} className="flavor-tag">{p}</span>)}
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <p className="hack-promo">Want a pro culinary strategy for these ingredients?</p>
-              )}
-            </section>
-          </div>
-        )}
-
-        {/* Item Input */}
-        <section className="card">
-          <div className="card-header">
-            <div className="card-icon icon-items">🥑</div>
-            <h2>Shopping List</h2>
-          </div>
-          <div className="input-group">
-            <input
-              type="text"
-              placeholder="Enter a grocery item (e.g., organic eggs)"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyPress={handleKeyPress}
-            />
-            <button className="btn btn-primary" onClick={() => addItem()}>
-              Add Item
-            </button>
-            <button
-              className={`btn btn-secondary btn-mic ${isListening ? 'listening' : ''}`}
-              onClick={startVoiceInput}
-              title="Voice input"
-            >
-              {isListening ? '🔴' : '🎤'}
-            </button>
-          </div>
-
-          {items.length > 0 ? (
-            <div className="grouped-list">
-              {groupedItems.map(group => (
-                <div key={group.label} className="category-group">
-                  <h3 className="category-header">
-                    <span>{group.icon}</span> {group.label}
-                  </h3>
-                  <ul className="item-list">
-                    {group.items.map((item, index) => {
-                      const actualIndex = items.findIndex(i => i.name === item.name);
-                      return (
-                        <li key={actualIndex} className={`item-row ${item.inPantry ? 'in-pantry' : ''}`}>
-                          <button
-                            className={`btn-checkbox ${item.inPantry ? 'checked' : ''}`}
-                            onClick={() => togglePantry(actualIndex)}
-                            title={item.inPantry ? 'Need to buy' : 'Already have'}
-                          >
-                            {item.inPantry ? '✓' : ''}
-                          </button>
-                          <span className={item.inPantry ? 'strikethrough' : ''}>{item.name}</span>
-                          <div className="price-input-wrapper">
-                            <span className="price-prefix">$</span>
-                            <input
-                              type="number"
-                              className="price-input"
-                              placeholder="Est."
-                              value={item.estimatedPrice}
-                              onChange={(e) => updatePrice(actualIndex, e.target.value)}
-                              min="0"
-                              step="0.01"
-                            />
-                          </div>
-                          <button
-                            className="btn btn-icon btn-danger"
-                            onClick={() => removeItem(actualIndex)}
-                            aria-label="Remove item"
-                          >
-                            ✕
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="empty-state">
-              <span>🥑</span>
-              <p>Your shopping list is empty. Add items to get started.</p>
-            </div>
           )}
-        </section>
-
-        {/* Results - Shopping Links */}
-        {shoppingItems.length > 0 && (
-          <section className="card">
-            <div className="card-header">
-              <div className="card-icon icon-results">🔗</div>
-              <h2>Shopping Links ({shoppingItems.length} items)</h2>
-            </div>
-
-            {/* Basket Efficiency Score */}
-            <div className="basket-efficiency">
-              <div className="efficiency-header">
-                <span className="efficiency-title">Basket Efficiency Score</span>
-                <span className="efficiency-badge">Expert Analysis</span>
-              </div>
-              <div className="efficiency-grid">
-                <div className="efficiency-stat">
-                  <span className="stat-label">Estimated Total</span>
-                  <span className="stat-value">${estimatedTotal.toFixed(2)}</span>
-                </div>
-                <div className="efficiency-stat">
-                  <span className="stat-label">Optimal Retailer</span>
-                  <span className="stat-value highlight">Walmart</span>
-                </div>
-                <div className="efficiency-stat">
-                  <span className="stat-label">Savings Potential</span>
-                  <span className="stat-value success">~$12.40</span>
-                </div>
-              </div>
-            </div>
-
-            <p style={{ color: 'var(--text-secondary)', marginBottom: '1rem', fontSize: '0.9rem' }}>
-              Click to compare prices across retailers (sorted low to high)
-            </p>
-
-            <div className="results-list">
-              {shoppingItems.map((item, index) => (
-                <div key={index} className="result-item">
-                  <span>{item.name}</span>
-                  <div className="result-actions">
-                    <a
-                      href={generateAmazonUrl(item.name)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="retailer-link amazon"
-                    >
-                      Amazon
-                    </a>
-                    <a
-                      href={generateWalmartUrl(item.name)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="retailer-link walmart"
-                    >
-                      Walmart
-                    </a>
-                    <a
-                      href={generateTargetUrl(item.name)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="retailer-link target"
-                    >
-                      Target
-                    </a>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="action-buttons">
-              <button className="btn btn-amazon" onClick={() => openAllLinks('amazon')}>
-                🚀 Open All Amazon
-              </button>
-              <button className="btn btn-walmart" onClick={() => openAllLinks('walmart')}>
-                🚀 Open All Walmart
-              </button>
-              <button className="btn btn-target" onClick={() => openAllLinks('target')}>
-                🚀 Open All Target
-              </button>
-            </div>
-
-            <div className="action-buttons">
-              <button className="btn btn-success" onClick={shareList}>
-                🔗 Share List
-              </button>
-              <button className="btn btn-secondary" onClick={() => copyAllLinks('amazon')}>
-                📋 Copy Links
-              </button>
-              <button className="btn btn-secondary" onClick={clearAll}>
-                🗑️ Clear List
-              </button>
-            </div>
-          </section>
-        )}
+        </main>
       </div>
 
-      {/* Toast notification */}
-      {showToast && (
-        <div className="toast toast-success">
-          <span>✓</span>
-          {toastMessage}
-        </div>
-      )}
+      <Toast message={toastMessage} visible={showToast} />
     </div>
   )
 }
-
-export default App

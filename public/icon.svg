@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Shopping cart">
+  <rect width="512" height="512" rx="96" fill="#0f172a"/>
+  <path fill="#818cf8" d="M128 160h48l19 40h220c11 0 19 9 17 20l-24 120c-2 9-10 16-19 16H192l-2 12c-1 6 4 12 11 12h168v40H201c-28 0-48-26-44-54l30-180H128V160zm80 280a32 32 0 1 1 0 64 32 32 0 0 1 0-64zm200 0a32 32 0 1 1 0 64 32 32 0 0 1 0-64z"/>
+  <path fill="#c7d2fe" d="m184 96 32 64h208v48H232l-48-96H96V96h88z"/>
+</svg>

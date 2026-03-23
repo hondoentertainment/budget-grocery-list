@@ -397,15 +397,15 @@ VITE_GEMINI_API_KEY=your_gemini_api_key_here
 ## 10. Security Considerations
 
 ### 10.1 API Key Security
-- Gemini API key stored in environment variables
-- Key not exposed in client-side code (bundled at build time)
-- Users must provide their own API key for AI features
+- `VITE_GEMINI_API_KEY` is embedded in the client bundle at build time—acceptable for personal/local use only
+- For public deployments, prefer the optional **server proxy** (`api/gemini.js` on Vercel) with `GEMINI_API_KEY` on the server and `VITE_GEMINI_PROXY_URL` pointing at `/api/gemini`
+- Users can supply their own key for AI features when running locally
 
 ### 10.2 Data Privacy
-- No server-side data storage
-- All data stored in URL parameters for sharing
-- No user tracking or analytics
-- No cookies or local storage (currently)
+- No server-side data storage (unless you deploy the optional Gemini proxy, which does not persist list data)
+- Lists and budgets persist in **browser `localStorage`** under `grocery-app-v1` for recovery across sessions
+- Shared lists use URL-encoded JSON (`items`, optional `budget`); treat shared links like sensitive data if lists are private
+- No user tracking or analytics in the default app
 
 ---
 
@@ -429,12 +429,16 @@ VITE_GEMINI_API_KEY=your_gemini_api_key_here
 ### 12.1 Code Organization
 ```
 src/
-├── App.jsx          # Main application component
-├── App.css          # Component-specific styles
-├── main.jsx         # Application entry point
-├── index.css        # Global styles, variables
-└── assets/          # Static assets
-    └── react.svg
+├── App.jsx              # Shell: state, persistence, handlers
+├── App.css              # Layout and feature styles
+├── main.jsx             # Entry (includes PWA service worker registration)
+├── index.css            # Global styles, variables, a11y helpers
+├── constants.js         # Categories, staples, filter keys
+├── lib/
+│   ├── persistence.js   # localStorage schema, migration, share payloads
+│   └── gemini.js        # Gemini / proxy client
+├── components/          # Presentational sections (budget, list, links, …)
+└── assets/
 ```
 
 ### 12.2 Naming Conventions
@@ -453,7 +457,10 @@ src/
 
 ## 13. Testing Requirements
 
-### 13.1 Manual Testing Checklist
+### 13.1 Automated tests
+- Playwright E2E in `tests/` — run `npm run test:e2e` (see GitHub Actions workflow)
+
+### 13.2 Manual Testing Checklist
 - [ ] Budget input and tracking
 - [ ] Add/remove items
 - [ ] Pantry toggle functionality
@@ -467,7 +474,7 @@ src/
 - [ ] Over-budget warnings
 - [ ] Empty state display
 
-### 13.2 Browser Testing
+### 13.3 Browser Testing
 - [ ] Chrome (Windows/Mac)
 - [ ] Edge (Windows)
 - [ ] Firefox (Windows/Mac)

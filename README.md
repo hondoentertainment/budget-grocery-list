@@ -1,16 +1,65 @@
-# React + Vite
+# Budget Grocery List
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A mobile-friendly web app for building grocery lists with **budget tracking**, **per-item notes**, **trip checkmarks** (picked up this run), **multi-list tabs**, **AI meal planning and recipe import** (Gemini), **voice add**, a **unit-price calculator**, and **price-sorted search links** for Amazon, Walmart, and Target.
 
-Currently, two official plugins are available:
+## Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- **Offline-ready PWA** — installable; precached shell + Google Fonts caching via Workbox.
+- **Multiple lists** — create, switch, and rename lists; counts show how many items you still need from the store.
+- **Honest insights** — live stats (need-from-store count, categories, priced lines, budget headroom) instead of fake “savings” numbers.
+- **Share via URL** — list and budget restore from query parameters.
+- **Optional secure Gemini usage** — use `VITE_GEMINI_API_KEY` locally, or deploy `api/gemini.js` on Vercel with `GEMINI_API_KEY` and set `VITE_GEMINI_PROXY_URL=/api/gemini` so the key stays server-side.
 
-## React Compiler
+## Development
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```bash
+npm install
+npm run dev
+```
 
-## Expanding the ESLint configuration
+## Environment variables
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+| Variable | Where | Purpose |
+|----------|--------|---------|
+| `VITE_GEMINI_API_KEY` | Local / build | Call Gemini from the browser (key is still in the client bundle). |
+| `VITE_GEMINI_PROXY_URL` | Production | e.g. `/api/gemini` — POST body forwarded to Gemini using server `GEMINI_API_KEY`. |
+| `GEMINI_API_KEY` | Vercel (server) | Used only by `api/gemini.js`. |
+
+Create a local `.env`:
+
+```env
+VITE_GEMINI_API_KEY=your_key_here
+```
+
+## Scripts
+
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Vite dev server |
+| `npm run build` | Production build (includes PWA service worker) |
+| `npm run preview` | Preview production build |
+| `npm run lint` | ESLint |
+| `npm run test:e2e` | Playwright E2E (starts dev server automatically) |
+| `npm run test:e2e:ui` | Playwright UI mode |
+
+## Deployment
+
+### GitHub Pages
+
+1. Repo **Settings → Pages**: set **Source** to **GitHub Actions** (not “Deploy from a branch”).
+2. Push to `main` or `master`; the **Deploy to GitHub Pages** workflow builds with the correct `base` path (`/<repo-name>/`).
+3. Site URL: `https://<owner>.github.io/budget-grocery-list/` (for this repo, owner is your GitHub user or org).
+
+`VITE_GEMINI_API_KEY` and other secrets: add them under **Settings → Secrets and variables → Actions**, then wire them into the deploy workflow as `env` on the Build step if you want AI features on the hosted site (keys in the client bundle are only appropriate for personal/low-risk use).
+
+### Other hosts
+
+Static output is in `dist/` after `npm run build`. For **Vercel**, include `vercel.json` (SPA rewrite) and optionally `api/gemini.js` for the proxy. For a root URL (not `/<repo>/`), build with default `base` (local build or set `GITHUB_ACTIONS` unset).
+
+## CI
+
+GitHub Actions runs lint, build, and Playwright (Chromium) on pushes and pull requests to `main` / `master`.
+
+## Docs
+
+See `PRD.md` for the full product requirements and roadmap.

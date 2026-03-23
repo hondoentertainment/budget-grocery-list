@@ -45,6 +45,47 @@ h1, h2, h3 {
   font-family: 'Outfit', sans-serif;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0.75rem;
+  z-index: 2000;
+  padding: 0.75rem 1.25rem;
+  background: var(--accent-primary);
+  color: #fff;
+  font-weight: 700;
+  border-radius: 12px;
+  text-decoration: none;
+  font-family: 'Outfit', sans-serif;
+}
+
+.skip-link:focus {
+  left: 0.75rem;
+  outline: 3px solid #fff;
+  outline-offset: 2px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+button:focus:not(:focus-visible) {
+  outline: none;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
