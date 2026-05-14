@@ -16,8 +16,17 @@ export default defineConfig([
     },
   },
   {
+    files: ['vite.config.js'],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 2020,
+      sourceType: 'module',
+      globals: globals.node,
+    },
+  },
+  {
     files: ['**/*.{js,jsx}'],
-    ignores: ['api/**', 'playwright.config.js'],
+    ignores: ['api/**', 'playwright.config.js', 'vite.config.js'],
     extends: [
       js.configs.recommended,
       reactHooks.configs.flat.recommended,
